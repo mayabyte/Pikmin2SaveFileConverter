@@ -4,7 +4,7 @@ use lazy_static::lazy_static;
 
 lazy_static! {
     // This is a hashmap rather than an array so the IDs are explicit.
-    //                                                     US,    PAL,   JP
+    //          US,   PAL,  JP
     pub(crate) static ref TREASURE_VALUES: HashMap<usize, [i32; 3]> = hashmap! {
         0   => [90,   90,   90],   // Rubber Ugly
         1   => [40,   40,   40],   // Insect Condo

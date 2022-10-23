@@ -7,7 +7,7 @@ use anyhow::{Result, Error, Context, anyhow};
 use treasures::TREASURE_VALUES;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name="p2saveconvert", about="Pikmin 2 save file converter and editor")]
+#[structopt(name="p2saveconvert", about="Pikmin 2 save file converter")]
 struct Args {
     #[structopt(parse(from_os_str))]
     input_file: PathBuf,
@@ -99,45 +99,45 @@ impl SaveFile {
     }
 
     pub fn recalculate_pokos(&mut self, region: &Region) -> Result<()> {
-        for save_file in [0, 1, 2] {
+        for file_num in [0, 1, 2] {
             let original_region = Region::from_byte(self.bytes[3])?;
-            let save_file_addr = self.save_file_addr(save_file);
-            let mut actual_pokos = i32::from_be_bytes(
-                self.bytes[save_file_addr+ACTUAL_POKO_COUNT_OFFSET..save_file_addr+ACTUAL_POKO_COUNT_OFFSET+4]
-                .try_into().unwrap()
-            );
-            let original_poko_count = actual_pokos;
-            let treasures = &self.bytes[save_file_addr+TREASURE_LIST_OFFSET .. save_file_addr+TREASURE_LIST_OFFSET+TREASURE_LIST_LEN];
+            if let Some(save_file) = self.save_slot_data(file_num) {
+                let mut actual_pokos = i32::from_be_bytes(
+                    save_file[ACTUAL_POKO_COUNT_OFFSET .. ACTUAL_POKO_COUNT_OFFSET + 4].try_into()?
+                );
+                let original_poko_count = actual_pokos;
+                let treasures = &save_file[TREASURE_LIST_OFFSET .. TREASURE_LIST_OFFSET + TREASURE_LIST_LEN];
 
-            let original_region_idx = original_region.to_index();
-            let new_region_idx = region.to_index();
-            for (id, status) in treasures.iter().enumerate() {
-                if *status > 0 {
-                    actual_pokos -= TREASURE_VALUES.get(&id).unwrap()[original_region_idx];
-                    actual_pokos += TREASURE_VALUES.get(&id).unwrap()[new_region_idx];
+                let original_region_idx = original_region.to_index();
+                let new_region_idx = region.to_index();
+                for (id, status) in treasures.iter().enumerate() {
+                    if *status > 0 {
+                        actual_pokos -= TREASURE_VALUES.get(&id).unwrap()[original_region_idx];
+                        actual_pokos += TREASURE_VALUES.get(&id).unwrap()[new_region_idx];
+                    }
                 }
-            }
 
-            for i in 0..4 {
-                self.bytes[save_file_addr + ACTUAL_POKO_COUNT_OFFSET + i] = actual_pokos.to_be_bytes()[i];
-                self.bytes[save_file_addr + DISPLAY_POKO_COUNT_OFFSET + i] = actual_pokos.to_be_bytes()[i];
-            }
-            let new_poko_count = i32::from_be_bytes(
-                self.bytes[save_file_addr+ACTUAL_POKO_COUNT_OFFSET..save_file_addr+ACTUAL_POKO_COUNT_OFFSET+4]
-                .try_into().unwrap()
-            );
+                for i in 0..4 {
+                    save_file[ACTUAL_POKO_COUNT_OFFSET + i] = actual_pokos.to_be_bytes()[i];
+                    save_file[DISPLAY_POKO_COUNT_OFFSET + i] = actual_pokos.to_be_bytes()[i];
+                }
+                let new_poko_count = i32::from_be_bytes(
+                    save_file[ACTUAL_POKO_COUNT_OFFSET .. ACTUAL_POKO_COUNT_OFFSET + 4].try_into()?
+                );
 
-            println!("Recalculated Pokos in slot {}. Old: {}. New: {}", save_file, original_poko_count, new_poko_count);
+                println!("Recalculated Pokos in slot {}. Old: {}. New: {}", file_num, original_poko_count, new_poko_count);
+            }
         }
 
         Ok(())
     }
 
     pub fn set_pokos_manually(&mut self, counts: &Vec<u32>) {
-        for save_file in [0, 1, 2] {
-            let save_file_addr = self.save_file_addr(save_file);
-            for i in 0..4 {
-                self.bytes[save_file_addr + ACTUAL_POKO_COUNT_OFFSET + i] = counts[save_file as usize].to_be_bytes()[i];
+        for file_num in [0, 1, 2] {
+            if let Some(save_file) = self.save_slot_data(file_num) {
+                for i in 0..4 {
+                    save_file[ACTUAL_POKO_COUNT_OFFSET + i] = counts[file_num].to_be_bytes()[i];
+                }
             }
         }
     }
@@ -151,38 +151,38 @@ impl SaveFile {
     }
 
     fn recalculate_checksum(&mut self) {
-        for file_num in [0, 1, 2] {
-            let save_file_addr = self.save_file_addr(file_num);
-            let save_file_bytes = &self.bytes[save_file_addr..save_file_addr+0xBFFC];
+        for file_num in 0..=2 {
+            if let Some(save_file) = self.save_slot_data(file_num) {
+                let save_data = &save_file[..0xBFFC];
+                let mut c1: u16 = 0;
+                let mut c2: u16 = 0;
+                for (b1, b2) in save_data.iter().tuples() {
+                    let val = (((*b1 as u32).wrapping_shl(8)).wrapping_add(*b2 as u32)) as u16;
+                    c1 = (c1.wrapping_add(val)) & 0xFFFF;
+                    c2 = (c2.wrapping_add(val ^ 0xFFFF)) & 0xFFFF;
+                }
+                if c1 == 0xFFFF {
+                    c1 = 0;
+                }
+                if c2 == 0xFFFF {
+                    c2 = 0;
+                }
 
-            let mut c1: u16 = 0;
-            let mut c2: u16 = 0;
-            for (b1, b2) in save_file_bytes.iter().tuples() {
-                let val = (((*b1 as u32).wrapping_shl(8)).wrapping_add(*b2 as u32)) as u16;
-                c1 = (c1.wrapping_add(val)) & 0xFFFF;
-                c2 = (c2.wrapping_add(val ^ 0xFFFF)) & 0xFFFF;
+                save_file[0xBFFC+0] = c1.to_be_bytes()[0];
+                save_file[0xBFFC+1] = c1.to_be_bytes()[1];
+                save_file[0xBFFC+2] = c2.to_be_bytes()[0];
+                save_file[0xBFFC+3] = c2.to_be_bytes()[1];
             }
-            if c1 == 0xFFFF {
-                c1 = 0;
-            }
-            if c2 == 0xFFFF {
-                c2 = 0;
-            }
-
-            self.bytes[save_file_addr+0xBFFC+0] = c1.to_be_bytes()[0];
-            self.bytes[save_file_addr+0xBFFC+1] = c1.to_be_bytes()[1];
-            self.bytes[save_file_addr+0xBFFC+2] = c2.to_be_bytes()[0];
-            self.bytes[save_file_addr+0xBFFC+3] = c2.to_be_bytes()[1];
         }
     }
 
-    fn save_file_addr(&self, file_num: u8) -> usize {
+    fn save_slot_data(&mut self, file_num: usize) -> Option<&mut [u8]> {
         for (i, bytes) in self.bytes.windows(9).enumerate() {
-            if &bytes[..8] == FILE_HEADER_MAGIC_STR && bytes[8] == file_num {
-                return i;
+            if &bytes[..8] == FILE_HEADER_MAGIC_STR && usize::from(bytes[8]) == file_num {
+                return Some(&mut self.bytes[i..i+0xC000]);
             }
         }
-        panic!("Couldn't find save file slots in provided save file!");
+        None
     }
 }
 
